@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,user-scalable=no"/>
+<title>Suika — 3-Song Playlist Loop</title>
+<style>
+  html,body{ height:100%; margin:0; font-family:Inter,Arial,Helvetica,sans-serif; display:flex; justify-content:center; align-items:center;
+    background:url("images/background.jpg") center/cover no-repeat fixed; }
+  #container{ display:flex; gap:20px; align-items:flex-start; }
+  #gameWrapper{ position:relative; background:rgba(255,255,255,0.4); backdrop-filter: blur(10px); border-radius:16px; box-shadow:0 20px 50px rgba(0,0,0,0.25); overflow:visible; }
+  #hud{ display:flex; justify-content:space-between; padding:10px 12px; font-weight:bold; }
+  button{ padding:6px 12px; border:none; border-radius:8px; background:#2aa879; color:white; font-weight:bold; cursor:pointer; }
+  #muteBtn{ background:#444; }
+  #arrow{ position:absolute; top:8px; font-size:28px; transform:translateX(-50%); pointer-events:none; }
+  #nextPreview{ position:absolute; top:40px; width:60px; height:60px; border-radius:50%; overflow:hidden; transform:translateX(-50%); border:3px solid white; pointer-events:none; display:flex; align-items:center; justify-content:center; background:#fff; }
+  #nextPreview img{ width:100%; height:100%; object-fit:cover; display:block; }
+  #loseLine{ position:absolute; left:0; width:100%; pointer-events:none; }
+  #levelBar{ display:flex; flex-direction:column; gap:8px; }
+  .levelIcon{ width:42px; height:42px; border-radius:50%; overflow:hidden; border:3px solid rgba(0,0,0,0.2); background:white; }
+  .levelIcon.locked{ opacity:0.3; filter:grayscale(0.6); }
+  .levelIcon img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .status{ font-size:12px; color:#6b4e3a; margin-top:6px; text-align:center; }
+</style>
+</head>
+<body>
+<div id="container">
+  <div>
+    <div id="gameWrapper">
+      <div id="hud">
+        <div>Score: <span id="score">0</span></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="muteBtn">Mute</button>
+          <button id="restartBtn">Restart</button>
+        </div>
+      </div>
+      <div id="arrow">⬇</div>
+      <div id="nextPreview"><img id="nextImg" alt=""></div>
+      <div id="loseLine"></div>
+    </div>
+    <div class="status">Tap / Click to drop — music loops through 3 tracks</div>
+  </div>
+  <div>
+    <div id="levelBar"></div>
+    <div class="status">Level progression</div>
+  </div>
+</div>
+
+<audio id="sDrop" src="sounds/drop.mp3" preload="auto"></audio>
+<audio id="sMerge" src="sounds/merge.mp3" preload="auto"></audio>
+<audio id="sGameover" src="sounds/gameover.mp3" preload="auto"></audio>
+
+<script src="https://cdn.jsdelivr.net/npm/matter-js@0.19.0/build/matter.min.js"></script>
+<script>
+const { Engine, Render, Runner, World, Bodies, Events, Body } = Matter;
+
+/* ---------- CONFIG ---------- */
+const NUM_LEVELS = 10;
+const initialUnlocked = 2;
+const ball9Radius = 60;
+const GAME_W = ball9Radius * 2 * 3;
+const GAME_H = ball9Radius * 2 * 4;
+const LOSE_HEIGHT = 120;
+const SPAWN_Y = 140;
+const SAFE_VELOCITY = 0.5;
+const LOSE_DELAY = 60;
+
+/* ---------- AUDIO PLAYLIST (3 TRACKS) ---------- */
+const bgTracks = [
+  'sounds/background1.mp3',
+  'sounds/background2.mp3',
+  'sounds/background3.mp3'
+];
+const bgAudio = new Audio();
+bgAudio.volume = 0.7;
+let bgIndex = 0;
+let audioEnabled = true;
+let bgStarted = false;
+
+// The "Perfect" Loop Logic
+bgAudio.addEventListener('ended', () => {
+  bgIndex = (bgIndex + 1) % bgTracks.length;
+  bgAudio.src = bgTracks[bgIndex];
+  bgAudio.play().catch(()=>{});
+});
+
+function startBackgroundPlaylist() {
+  if (!audioEnabled || bgStarted) return;
+  bgStarted = true;
+  bgAudio.src = bgTracks[bgIndex];
+  bgAudio.play().catch(() => { bgStarted = false; }); // Reset if blocked
+}
+
+// SFX cloned for overlapping
+function playSFX(id, vol = 0.6) {
+  if (!audioEnabled) return;
+  const base = document.getElementById(id);
+  if (base) {
+    const n = base.cloneNode();
+    n.volume = vol;
+    n.play().catch(()=>{});
+  }
+}
+
+/* START ON GESTURE */
+window.addEventListener('pointerdown', startBackgroundPlaylist, { once: true });
+
+/* ---------- PHYSICS & RENDER ---------- */
+const engine = Engine.create();
+engine.world.gravity.y = 1.2;
+engine.positionIterations = 16;
+engine.velocityIterations = 16;
+const world = engine.world;
+
+const render = Render.create({
+  element: document.getElementById('gameWrapper'),
+  engine,
+  options: { width: GAME_W, height: GAME_H, wireframes: false, background: "#fff4ea" }
+});
+Render.run(render);
+Runner.run(Runner.create(), engine);
+
+document.getElementById('gameWrapper').style.width = GAME_W + 'px';
+document.getElementById('gameWrapper').style.height = GAME_H + 'px';
+document.getElementById('loseLine').style.top = LOSE_HEIGHT + 'px';
+
+/* Walls */
+const thick = 300;
+World.add(world, [
+  Bodies.rectangle(GAME_W/2, GAME_H + thick/2, GAME_W, thick, { isStatic: true }),
+  Bodies.rectangle(-thick/2, GAME_H/2, thick, GAME_H, { isStatic: true }),
+  Bodies.rectangle(GAME_W + thick/2, GAME_H/2, thick, GAME_H, { isStatic: true })
+]);
+
+/* Images */
+const images = [];
+for (let i = 0; i < NUM_LEVELS; i++) {
+  const img = new Image();
+  img.src = `images/ball${i}.jpg`;
+  images.push(img);
+}
+
+/* ---------- STATE ---------- */
+let unlockedMax = initialUnlocked;
+let score = 0;
+let nextLevel = Math.floor(Math.random() * (unlockedMax + 1));
+let currentX = GAME_W / 2;
+let gameOver = false;
+let loseTimer = 0;
+
+function radiusByLevel(l) { return 22 + l * 6; }
+
+function updatePreview(x) {
+  const px = Math.max(20, Math.min(GAME_W - 20, x));
+  document.getElementById('arrow').style.left = px + 'px';
+  document.getElementById('nextPreview').style.left = px + 'px';
+  document.getElementById('nextImg').src = images[nextLevel] ? images[nextLevel].src : '';
+}
+
+function spawnBall(x, level, isMerge = false, pos = null) {
+  if (gameOver) return null;
+  const r = radiusByLevel(level);
+  const px = pos ? pos.x : Math.max(r + 12, Math.min(GAME_W - r - 12, x));
+  const py = pos ? pos.y : SPAWN_Y;
+  
+  const body = Bodies.circle(px, py, r, {
+    restitution: 0.18, friction: 0.18, frictionAir: 0.02, density: 0.003,
+    label: `ball_${level}`, render: { visible: false }
+  });
+  body.isMerging = false;
+  body.scaleEffect = isMerge ? 1.8 : 1;
+  World.add(world, body);
+  
+  if(!isMerge) {
+    playSFX('sDrop', 0.5);
+    startBackgroundPlaylist();
+  }
+  return body;
+}
+
+/* ---------- INPUT ---------- */
+const canvas = render.canvas;
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  currentX = e.clientX - rect.left;
+  updatePreview(currentX);
+});
+canvas.addEventListener('click', () => {
+  if (gameOver) return;
+  spawnBall(currentX, nextLevel);
+  nextLevel = Math.floor(Math.random() * (unlockedMax + 1));
+  updatePreview(currentX);
+});
+
+/* ---------- LOGIC ---------- */
+Events.on(engine, 'collisionStart', event => {
+  event.pairs.forEach(pair => {
+    const A = pair.bodyA, B = pair.bodyB;
+    if (!A.label?.startsWith('ball_') || !B.label?.startsWith('ball_')) return;
+    if (A.isMerging || B.isMerging) return;
+
+    const lvlA = parseInt(A.label.split('_')[1]);
+    const lvlB = parseInt(B.label.split('_')[1]);
+    if (lvlA === lvlB && lvlA < NUM_LEVELS - 1) {
+      A.isMerging = B.isMerging = true;
+      setTimeout(() => {
+        if (!world.bodies.includes(A) || !world.bodies.includes(B)) return;
+        const mid = { x: (A.position.x + B.position.x) / 2, y: (A.position.y + B.position.y) / 2 };
+        World.remove(world, [A, B]);
+        const nb = spawnBall(mid.x, lvlA + 1, true, mid);
+        if (nb) Body.setVelocity(nb, { x: nb.velocity.x, y: nb.velocity.y - 1.2 });
+        
+        score += (lvlA + 2) * 15;
+        document.getElementById('score').innerText = score;
+        playSFX('sMerge', 0.7);
+        if (lvlA + 1 > unlockedMax) { unlockedMax = lvlA + 1; updateLevelBar(); }
+      }, 40);
+    }
+  });
+});
+
+Events.on(engine, 'afterUpdate', () => {
+  if (gameOver) return;
+  let danger = world.bodies.some(b => b.label?.startsWith('ball_') && (b.position.y - b.circleRadius) < LOSE_HEIGHT && b.speed < SAFE_VELOCITY);
+  loseTimer = danger ? loseTimer + 1 : 0;
+  if (loseTimer > LOSE_DELAY) {
+    gameOver = true;
+    playSFX('sGameover', 0.9);
+    setTimeout(() => { alert('Game Over! Score: ' + score); location.reload(); }, 300);
+  }
+});
+
+/* ---------- RENDER (YOUR IDEAL DRAW LOGIC) ---------- */
+Events.on(render, 'afterRender', () => {
+  const ctx = render.context;
+  world.bodies.forEach(b => {
+    if (!b.label?.startsWith('ball_')) return;
+    const lvl = parseInt(b.label.split('_')[1]);
+    const rBase = b.circleRadius;
+    b.scaleEffect = b.scaleEffect > 1 ? b.scaleEffect - 0.06 : 1;
+    const r = rBase * b.scaleEffect;
+    const { x, y } = b.position;
+
+    // Shadow
+    ctx.beginPath();
+    ctx.ellipse(x, y + r * 0.55, r * 0.95, r * 0.35, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.06)';
+    ctx.fill();
+
+    // Clip Image
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.clip();
+    const img = images[lvl];
+    if (img?.complete) {
+      ctx.drawImage(img, x - r, y - r, r * 2, r * 2);
+    } else {
+      ctx.fillStyle = `hsl(${lvl*36},70%,60%)`;
+      ctx.fillRect(x-r, y-r, r*2, r*2);
+    }
+    ctx.restore();
+
+    // Outer dark rim
+    ctx.beginPath();
+    ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+    ctx.lineWidth = Math.max(5, r * 0.12);
+    ctx.strokeStyle = 'rgba(0,0,0,0.48)';
+    ctx.stroke();
+
+    // Glow logic
+    let color = `hsl(${lvl*36},70%,60%)`;
+    const grad = ctx.createRadialGradient(x, y, r * 0.5, x, y, r + 10);
+    grad.addColorStop(0, rgba(color, 0.24));
+    grad.addColorStop(1, rgba(color, 0.02));
+    ctx.beginPath(); ctx.arc(x, y, r + 8, 0, Math.PI * 2);
+    ctx.fillStyle = grad; ctx.fill();
+
+    // Inner bright rim & highlight
+    ctx.beginPath(); ctx.arc(x, y, r - 1.2, 0, Math.PI * 2);
+    ctx.lineWidth = Math.max(2, r * 0.06); ctx.strokeStyle = 'rgba(255,255,255,0.92)'; ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(x - r * 0.4, y - r * 0.56, r * 0.6, r * 0.36, -0.5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.28)'; ctx.fill();
+  });
+
+  // Lose Line
+  ctx.beginPath(); ctx.setLineDash([6,6]); ctx.moveTo(0, LOSE_HEIGHT); ctx.lineTo(GAME_W, LOSE_HEIGHT);
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(220,40,40,0.95)'; ctx.stroke(); ctx.setLineDash([]);
+});
+
+/* ---------- UTILS ---------- */
+function rgba(c, a) {
+  if (c.startsWith('hsl')) return c.replace('hsl', 'hsla').replace(')', `, ${a})`);
+  return `rgba(255,255,255,${a})`;
+}
+function updateLevelBar() {
+  levelBar.innerHTML = '';
+  for (let i = 0; i < NUM_LEVELS; i++) {
+    const d = document.createElement('div');
+    d.className = 'levelIcon' + (i > unlockedMax ? ' locked' : '');
+    const im = document.createElement('img'); im.src = images[i].src;
+    d.appendChild(im); levelBar.appendChild(d);
+  }
+}
+muteBtn.onclick = () => {
+  audioEnabled = !audioEnabled;
+  if (!audioEnabled) bgAudio.pause(); else { bgAudio.play(); startBackgroundPlaylist(); }
+  muteBtn.textContent = audioEnabled ? 'Mute' : 'Unmute';
+};
+restartBtn.onclick = () => { location.reload(); };
+
+/* INIT */
+updateLevelBar();
+updatePreview(currentX);
+</script>
+</body>
+</html>
